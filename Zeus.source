@@ -1,0 +1,1194 @@
+--[[ Zeus BB — Enhanced (Compact + Loadable) ]]
+-- Wrap everything so load errors print instead of silently dying
+local ok, err = pcall(function()
+
+if not game:IsLoaded() then repeat task.wait() until game:IsLoaded() end
+
+-- Services
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService        = game:GetService("RunService")
+local UserInputService  = game:GetService("UserInputService")
+local Stats             = game:GetService("Stats")
+local Lighting          = game:GetService("Lighting")
+local CoreGui           = game:GetService("CoreGui")
+local Debris            = game:GetService("Debris")
+local VirtualInputManager = Instance.new("VirtualInputManager")
+
+local Player    = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
+
+local Balls   = workspace:WaitForChild("Balls")
+local Alive   = workspace:WaitForChild("Alive")
+local Runtime = workspace:WaitForChild("Runtime", 10)
+
+-- ═══ RAYFIELD ═══
+local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+
+local Window = Rayfield:CreateWindow({
+    Name = "Zeus BB",
+    LoadingTitle = "Zeus BB",
+    LoadingSubtitle = "Enhanced",
+    ConfigurationSaving = { Enabled = true, FolderName = "ZeusBB", FileName = "Config" },
+    KeySystem = false,
+})
+
+local MainTab       = Window:CreateTab("Main", 4483362458)
+local AutomationTab = Window:CreateTab("Automation", 4483362458)
+local DetectionTab  = Window:CreateTab("Detections", 4483362458)
+local PlayerTab     = Window:CreateTab("Player", 4483362458)
+local VisualTab     = Window:CreateTab("Visuals", 4483362458)
+local SkinTab       = Window:CreateTab("Skin", 4483362458)
+local UnlockTab     = Window:CreateTab("Unlock", 4483362458)
+local MiscTab       = Window:CreateTab("Misc", 4483362458)
+local SettingsTab   = Window:CreateTab("Settings", 4483362458)
+
+-- ═══ STATE ═══
+local State = {
+    AutoParry = false, ParryType = "Camera", ParryMode = "Remote",
+    ParryAccuracy = 100, ParryRange = 0,
+    Humanizer = false, HumanizerMin = 25, HumanizerMax = 85,
+    AutoSpam = false, SpamThreshold = 2, SpamMode = "Remote",
+    ManualSpam = false, ManualCPS = 240,
+    Triggerbot = false,
+    DetectInfinity = false, DetectDeathSlash = false, DetectTimeHole = false,
+    DetectSoF = false, DetectPhantom = false, DetectDribble = false,
+    DetectStaff = false,
+    InfinityActive = false, DeathSlashActive = false, TimeHoleActive = false, SoFActive = false,
+    Speed = false, SpeedValue = 36,
+    Fly = false, FlySpeed = 50,
+    Spinbot = false, SpinSpeed = 5,
+    FollowTarget = nil, FollowNotify = false,
+    AvatarChanger = false,
+    NoRender = false, AntiLag = false,
+    AbilityESP = false, BallTrail = false, BallTrailRainbow = false,
+    BallStats = false, FOV = false, FOVValue = 70,
+    HitSounds = false, HitSoundType = "Medal", HitSoundVolume = 5,
+    PingSpoofer = false, PingValue = 999,
+    CustomSky = false, SkySelection = "Default",
+    AntiAFK = false, AutoRejoin = false,
+    SemiImmortal = false, SemiRadius = 40, SemiHeight = 100,
+    AutoAbility = false, CooldownProtection = false,
+    SkinChanger = false, SwordModel = "",
+    Parried = false, Parries = 0, LastPlayAnim = 0, BypassCd = false, LastParry = 0,
+}
+
+local Connections = {}
+local BallData = setmetatable({}, { __mode = "k" })
+local TrackedBall, RealBallPos
+
+-- ═══ HELPERS ═══
+local function getPing()
+    local ok2, v = pcall(function() return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
+    return ok2 and v or (Player:GetNetworkPing() * 1000)
+end
+
+local function getBall()
+    for _, b in ipairs(Balls:GetChildren()) do
+        if b:GetAttribute("realBall") then return b end
+    end
+end
+
+local function getBalls()
+    local t = {}
+    for _, b in ipairs(Balls:GetChildren()) do
+        if b:GetAttribute("realBall") then table.insert(t, b) end
+    end
+    return t
+end
+
+local function ballPosition(ball)
+    if ball == TrackedBall and RealBallPos then return RealBallPos end
+    return ball.Position
+end
+
+local function getCurveData(ball)
+    if BallData[ball] then return BallData[ball] end
+    local d = { Flips=0, FlipTime=0, Dot=0, LerpRad=0, LastWarping=0, Curving=0, TriggerbotParried=false }
+    BallData[ball] = d
+    d.Target = ball:GetAttributeChangedSignal("target"):Connect(function()
+        State.Parried = false
+        d.TriggerbotParried = false
+    end)
+    return d
+end
+
+local function isCurved(ball)
+    if not ball or ball:GetAttribute("target") ~= Player.Name then return false end
+    local char = Player.Character
+    local root = char and char.PrimaryPart
+    if not root then return false end
+    local z = ball:FindFirstChild("zoomies")
+    if not z then return false end
+    local vel = z.VectorVelocity
+    local pos = ballPosition(ball)
+    local offset = root.Position - pos
+    local speed = vel.Magnitude
+    local dist = offset.Magnitude
+    if speed < 0.001 or dist < 0.001 then return false end
+    local d = getCurveData(ball)
+    local dir = offset.Unit
+    local bdir = vel.Unit
+    local dot = dir:Dot(bdir)
+    local ping = getPing()
+    local dotTh = 0.5 - ping / 1000
+    local reachT = math.max(0, dist / speed - ping / 1000)
+    local distTh = 15 - math.min(dist / 1000, 15) + 20 * math.max(dot, 0) + math.min(speed / 100, 40)
+    local rad = math.rad(math.asin(math.clamp(dot, -1, 1)))
+    local t = os.clock()
+    if math.sign(dot) ~= math.sign(d.dot) then
+        if t - d.FlipTime < 0.2 then d.Flips += 1 else d.Flips = 0 end
+        d.FlipTime = t
+    end
+    d.Dot = dot
+    d.LerpRad = d.LerpRad + (rad - d.LerpRad) * 0.8
+    if speed > 100 and reachT > ping / 10 then distTh = math.max(distTh - 15, 15) end
+    if d.Flips >= 5 then return false end
+    if dot < 0 then return true end
+    if dist < distTh then return false end
+    if dot < dotTh then return true end
+    if d.LerpRad < 0.018 then d.LastWarping = tick() end
+    if tick() - d.LastWarping < reachT / 1.5 then return true end
+    return dot < dotTh
+end
+
+local function getHumanizedAccuracy()
+    if not State.Humanizer then return State.ParryAccuracy end
+    local mn = math.min(State.HumanizerMin, State.HumanizerMax)
+    local mx = math.max(State.HumanizerMin, State.HumanizerMax)
+    return math.random(mn, mx)
+end
+
+-- ═══ PARRY SENDER (simple hook, no fragile native bypass) ═══
+local revertedRemotes = {}
+local PF = nil
+
+-- Find parry function from Hotbar.Block.Activated
+pcall(function()
+    local SC
+    if ReplicatedStorage:FindFirstChild("Controllers") then
+        for _, c in ipairs(ReplicatedStorage.Controllers:GetChildren()) do
+            if c.Name:match("^SwordsController") then SC = c break end
+        end
+    end
+    if SC and PlayerGui:FindFirstChild("Hotbar") and PlayerGui.Hotbar:FindFirstChild("Block") then
+        for _, v in pairs(getconnections(PlayerGui.Hotbar.Block.Activated)) do
+            if v.Function and getfenv(v.Function).script == SC then
+                PF = v.Function
+                break
+            end
+        end
+    end
+end)
+
+local function isValidRemoteArgs(args)
+    return #args == 7 and type(args[2]) == "string" and type(args[3]) == "number"
+        and typeof(args[4]) == "CFrame" and type(args[5]) == "table"
+        and type(args[6]) == "table" and type(args[7]) == "boolean"
+end
+
+local function hookRemote(remote)
+    if revertedRemotes[remote] then return end
+    local meta = getrawmetatable(remote)
+    if not meta then return end
+    setreadonly(meta, false)
+    local oldIndex = meta.__index
+    meta.__index = function(self, key)
+        if (key == "FireServer" and self:IsA("RemoteEvent")) or
+           (key == "InvokeServer" and self:IsA("RemoteFunction")) then
+            return function(_, ...)
+                local args = {...}
+                if isValidRemoteArgs(args) and not revertedRemotes[self] then
+                    revertedRemotes[self] = args
+                end
+                return oldIndex(self, key)(_, unpack(args))
+            end
+        end
+        return oldIndex(self, key)
+    end
+    setreadonly(meta, true)
+end
+
+for _, remote in ipairs(ReplicatedStorage:GetChildren()) do
+    if remote:IsA("RemoteEvent") or remote:IsA("RemoteFunction") then
+        pcall(hookRemote, remote)
+    end
+end
+ReplicatedStorage.ChildAdded:Connect(function(child)
+    if child:IsA("RemoteEvent") or child:IsA("RemoteFunction") then pcall(hookRemote, child) end
+end)
+
+local function sendParry(dir, targets, aim)
+    local fired = false
+    for remote, origArgs in pairs(revertedRemotes) do
+        local modArgs = { origArgs[1], origArgs[2], origArgs[3], dir, targets, aim, origArgs[7] }
+        pcall(function()
+            if remote:IsA("RemoteEvent") then
+                remote:FireServer(unpack(modArgs)); fired = true
+            elseif remote:IsA("RemoteFunction") then
+                remote:InvokeServer(unpack(modArgs)); fired = true
+            end
+        end)
+    end
+    if not fired and PF then pcall(PF); fired = true end
+    if not fired then
+        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
+        task.wait(0.02)
+        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+        fired = true
+    end
+    return fired
+end
+
+-- ═══ PARRY DATA ═══
+local function buildParryData(parryType)
+    local cam = workspace.CurrentCamera
+    local mousePos = UserInputService:GetMouseLocation()
+    local targets = {}
+    for _, m in ipairs(Alive:GetChildren()) do
+        if m:FindFirstChild("HumanoidRootPart") then
+            pcall(function() targets[m.Name] = cam:WorldToScreenPoint(m.HumanoidRootPart.Position) end)
+        end
+    end
+    local mouse = { mousePos.X, mousePos.Y }
+    local camFrame = CFrame.new(cam.CFrame.Position, cam.CFrame.Position + cam.CFrame.LookVector)
+
+    if parryType == "Camera" then return camFrame, targets, mouse end
+    if parryType == "Random" then
+        local dir = Vector3.new(math.random(-3000,3000), math.random(-3000,3000), math.random(-3000,3000))
+        return CFrame.new(cam.CFrame.Position, cam.CFrame.Position + dir), targets, mouse
+    end
+    if parryType == "Backwards" then
+        local l = -cam.CFrame.LookVector * 10000
+        return CFrame.new(cam.CFrame.Position, cam.CFrame.Position + Vector3.new(l.X, 100, l.Z)), targets, mouse
+    end
+    if parryType == "High" then
+        return CFrame.new(cam.CFrame.Position, cam.CFrame.Position + Vector3.new(0, 10000, 0)), targets, mouse
+    end
+    if parryType == "Down" then
+        return CFrame.new(cam.CFrame.Position, cam.CFrame.Position + Vector3.new(0, -9e18, 0)), targets, mouse
+    end
+    if parryType == "Dot" then
+        local best, bestDist
+        bestDist = math.huge
+        local vp = cam.ViewportSize
+        local center = Vector2.new(vp.X/2, vp.Y/2)
+        for _, m in ipairs(Alive:GetChildren()) do
+            if m ~= Player.Character and m.PrimaryPart then
+                local sp, on = cam:WorldToScreenPoint(m.PrimaryPart.Position)
+                if on then
+                    local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+                    if d < bestDist then bestDist = d; best = { C = m, S = {sp.X, sp.Y} } end
+                end
+            end
+        end
+        if best and Player.Character and Player.Character.PrimaryPart then
+            return CFrame.new(Player.Character.PrimaryPart.Position, best.C.PrimaryPart.Position), targets, best.S
+        end
+        return camFrame, targets, mouse
+    end
+    if parryType == "Closest" then
+        local best, bestDist = nil, math.huge
+        for _, m in ipairs(Alive:GetChildren()) do
+            if m ~= Player.Character and m.PrimaryPart and Player.Character and Player.Character.PrimaryPart then
+                local d = (Player.Character.PrimaryPart.Position - m.PrimaryPart.Position).Magnitude
+                if d < bestDist then
+                    bestDist = d
+                    local sp, on = cam:WorldToScreenPoint(m.PrimaryPart.Position)
+                    if on then best = { C = m, S = {sp.X, sp.Y} } end
+                end
+            end
+        end
+        if best then
+            return CFrame.new(Player.Character.PrimaryPart.Position, best.C.PrimaryPart.Position), targets, best.S
+        end
+        return camFrame, targets, mouse
+    end
+    if parryType == "RandomTarget" then
+        local cands = {}
+        for _, m in ipairs(Alive:GetChildren()) do
+            if m ~= Player.Character and m.PrimaryPart then
+                local sp, on = cam:WorldToScreenPoint(m.PrimaryPart.Position)
+                if on then table.insert(cands, { C = m, S = {sp.X, sp.Y} }) end
+            end
+        end
+        if #cands > 0 then
+            local c = cands[math.random(1, #cands)]
+            return CFrame.new(Player.Character.PrimaryPart.Position, c.C.PrimaryPart.Position), targets, c.S
+        end
+        return camFrame, targets, mouse
+    end
+    return camFrame, targets, mouse
+end
+
+local function doParry(parryType)
+    local frame, targets, aim = buildParryData(parryType or State.ParryType)
+    local ok2 = sendParry(frame, targets, aim)
+    if ok2 then
+        State.Parries += 1
+        task.delay(0.5, function() if State.Parries > 0 then State.Parries -= 1 end end)
+    end
+    return ok2
+end
+
+-- Animation
+local function playParryAnim()
+    pcall(function()
+        local char = Player.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local anim = hum and hum:FindFirstChildOfClass("Animator")
+        if not anim then return end
+        local attr = char:GetAttribute("CurrentlyEquippedSword") or Player:GetAttribute("CurrentlyEquippedSword")
+        if not attr then return end
+        local swordApi = require(ReplicatedStorage.Shared.SwordAPI)
+        local animCtrl = require(ReplicatedStorage.Controllers.AnimationController)
+        local swords = require(ReplicatedStorage.Shared.ReplicatedInstances.Swords)
+        local info = swords:GetSword(attr)
+        if not info then return end
+        for _, t in animCtrl:GetPlayingAnimationTracks(anim) do
+            if t.Name == "Parry" or t.Name == "GrabParry" or t.Name == "Grab" then
+                t:Stop(t:GetAttribute("StopFadeTime") or 0.1)
+            end
+        end
+        for _, a in swordApi:GetAnimations(char, {"Parry","GrabParry"}, info.AnimationType, info.SwordType) do
+            local t = animCtrl:LoadAnimation(anim, a, true)
+            t:Play(t:GetAttribute("PlayFadeTime") or 0.1, t:GetAttribute("PlayWeight") or 1, t:GetAttribute("PlaySpeed") or 1)
+        end
+    end)
+end
+
+local function playAnimation()
+    if os.clock() - State.LastPlayAnim >= 1 or State.BypassCd then
+        State.LastPlayAnim = os.clock()
+        State.BypassCd = false
+        playParryAnim()
+    end
+end
+
+-- ═══ MAIN TAB ═══
+MainTab:CreateSection("Auto Parry")
+
+MainTab:CreateToggle({
+    Name = "Auto Parry",
+    CurrentValue = false,
+    Flag = "Auto_Parry",
+    Callback = function(on)
+        State.AutoParry = on
+        if on then
+            if Connections.AutoParry then Connections.AutoParry:Disconnect() end
+            Connections.AutoParry = RunService.PreSimulation:Connect(function()
+                if not State.AutoParry then return end
+                local char = Player.Character
+                if not char or char.Parent ~= Alive or not char.PrimaryPart then return end
+                for _, b in ipairs(getBalls()) do
+                    if b:GetAttribute("target") ~= Player.Name then continue end
+                    local z = b:FindFirstChild("zoomies")
+                    if not z then continue end
+                    if State.DetectInfinity and State.InfinityActive then continue end
+                    if State.DetectDeathSlash and State.DeathSlashActive then continue end
+                    if State.DetectTimeHole and State.TimeHoleActive then continue end
+                    if State.DetectSoF and State.SoFActive then continue end
+                    if b:FindFirstChild("ComboCounter") then continue end
+                    if char.PrimaryPart:FindFirstChild("SingularityCape") then continue end
+                    if isCurved(b) then continue end
+                    local vel = z.VectorVelocity
+                    local speed = vel.Magnitude
+                    local pos = ballPosition(b)
+                    local dist = (char.PrimaryPart.Position - pos).Magnitude
+                    local ping = getPing()
+                    local acc = getHumanizedAccuracy()
+                    local mult = 0.7 + (acc - 1) * (0.35 / 99)
+                    local sDiv = (2.4 + math.clamp(speed - 9.5, 0, 650) * 0.002) * mult
+                    local thresh = math.clamp(ping / 10, 5, 17) + math.max(speed / sDiv, 9.5) + State.ParryRange
+                    if State.CooldownProtection then
+                        local hb = PlayerGui:FindFirstChild("Hotbar")
+                        local blk = hb and hb:FindFirstChild("Block")
+                        local gr = blk and blk:FindFirstChildWhichIsA("UIGradient")
+                        if gr and gr.Offset.Y < 0.4 then
+                            pcall(function() ReplicatedStorage.Remotes.AbilityButtonPress:Fire() end)
+                            continue
+                        end
+                    end
+                    if State.AutoAbility then
+                        local hb = PlayerGui:FindFirstChild("Hotbar")
+                        local ab = hb and hb:FindFirstChild("Ability")
+                        local gr = ab and ab:FindFirstChildWhichIsA("UIGradient")
+                        if gr and gr.Offset.Y == 0.5 then
+                            local abs = char:FindFirstChild("Abilities")
+                            if abs then
+                                for _, nm in ipairs({"Raging Deflection","Rapture","Calming Deflection","Aerodynamic Slash","Fracture","Death Slash"}) do
+                                    local o = abs:FindFirstChild(nm)
+                                    if o and o.Enabled then
+                                        pcall(function() ReplicatedStorage.Remotes.AbilityButtonPress:Fire() end)
+                                        break
+                                    end
+                                end
+                            end
+                        end
+                    end
+                    if dist <= thresh and not State.Parried then
+                        playAnimation()
+                        if State.ParryMode == "Keypress" then
+                            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
+                            task.wait(0.02)
+                            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+                        else
+                            doParry()
+                        end
+                        State.LastParry = os.clock()
+                        State.Parried = true
+                        task.delay(0.6, function() State.Parried = false end)
+                    end
+                end
+            end)
+        elseif Connections.AutoParry then
+            Connections.AutoParry:Disconnect()
+            Connections.AutoParry = nil
+        end
+    end,
+})
+
+MainTab:CreateDropdown({
+    Name = "Parry Type",
+    Options = {"Camera","High","Down","Dot","Closest","Random","RandomTarget","Backwards"},
+    CurrentOption = "Camera",
+    Flag = "Parry_Type",
+    Callback = function(v) State.ParryType = v end,
+})
+
+MainTab:CreateDropdown({
+    Name = "Parry Mode",
+    Options = {"Remote","Keypress"},
+    CurrentOption = "Remote",
+    Flag = "Parry_Mode",
+    Callback = function(v) State.ParryMode = v end,
+})
+
+MainTab:CreateSlider({ Name="Parry Accuracy", Range={1,100}, Increment=1, Suffix="%", CurrentValue=100, Flag="Parry_Accuracy",
+    Callback = function(v) State.ParryAccuracy = v end })
+
+MainTab:CreateSlider({ Name="Parry Range", Range={0,10}, Increment=1, CurrentValue=0, Flag="Parry_Range",
+    Callback = function(v) State.ParryRange = v end })
+
+MainTab:CreateToggle({ Name="Randomize Accuracy", CurrentValue=false, Flag="Humanizer",
+    Callback = function(v) State.Humanizer = v end })
+
+MainTab:CreateSlider({ Name="Humanizer Min", Range={1,100}, Increment=1, CurrentValue=25, Flag="Hum_Min",
+    Callback = function(v) State.HumanizerMin = v end })
+
+MainTab:CreateSlider({ Name="Humanizer Max", Range={1,100}, Increment=1, CurrentValue=85, Flag="Hum_Max",
+    Callback = function(v) State.HumanizerMax = v end })
+
+-- ═══ AUTOMATION TAB ═══
+AutomationTab:CreateSection("Auto Spam")
+AutomationTab:CreateToggle({
+    Name = "Auto Spam", CurrentValue = false, Flag = "Auto_Spam",
+    Callback = function(on)
+        State.AutoSpam = on
+        if on then
+            if Connections.AutoSpam then Connections.AutoSpam:Disconnect() end
+            Connections.AutoSpam = RunService.PostSimulation:Connect(function()
+                if not State.AutoSpam then return end
+                local char = Player.Character
+                if not char or char.Parent ~= Alive then return end
+                local ball = getBall()
+                if not ball or not ball:FindFirstChild("zoomies") then return end
+                local vel = ball:FindFirstChild("zoomies").VectorVelocity
+                if vel.Magnitude < 50 then return end
+                local dist = (char.PrimaryPart.Position - ballPosition(ball)).Magnitude
+                local ping = getPing()
+                local thresh = math.clamp(ping / 10, 5, 17) + vel.Magnitude / 5.8
+                if State.CooldownProtection then
+                    local hb = PlayerGui:FindFirstChild("Hotbar")
+                    local blk = hb and hb:FindFirstChild("Block")
+                    local gr = blk and blk:FindFirstChildWhichIsA("UIGradient")
+                    if gr and gr.Offset.Y < 0.49 then return end
+                end
+                if dist <= thresh and State.Parries >= State.SpamThreshold then
+                    if State.SpamMode == "Keypress" then
+                        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
+                        task.wait(0.02)
+                        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+                    else
+                        doParry()
+                    end
+                end
+            end)
+        elseif Connections.AutoSpam then
+            Connections.AutoSpam:Disconnect(); Connections.AutoSpam = nil
+        end
+    end,
+})
+
+AutomationTab:CreateDropdown({ Name="Spam Mode", Options={"Remote","Keypress"}, CurrentOption="Remote", Flag="Spam_Mode",
+    Callback = function(v) State.SpamMode = v end })
+
+AutomationTab:CreateSlider({ Name="Spam Threshold", Range={1,3}, Increment=1, CurrentValue=2, Flag="Spam_Threshold",
+    Callback = function(v) State.SpamThreshold = v end })
+
+AutomationTab:CreateSection("Manual Spam")
+AutomationTab:CreateToggle({
+    Name = "Manual Spam", CurrentValue = false, Flag = "Manual_Spam",
+    Callback = function(on)
+        State.ManualSpam = on
+        if on then
+            local accum = 0
+            if Connections.ManualSpam then Connections.ManualSpam:Disconnect() end
+            Connections.ManualSpam = RunService.Heartbeat:Connect(function(dt)
+                if not State.ManualSpam then return end
+                local char = Player.Character
+                if not char or char.Parent ~= Alive then return end
+                accum += dt
+                local interval = 1 / math.max(1, State.ManualCPS)
+                if accum < interval then return end
+                accum = 0
+                doParry()
+            end)
+        elseif Connections.ManualSpam then
+            Connections.ManualSpam:Disconnect(); Connections.ManualSpam = nil
+        end
+    end,
+})
+
+AutomationTab:CreateSlider({ Name="Manual Spam CPS", Range={60,1000}, Increment=10, Suffix=" CPS", CurrentValue=240, Flag="Manual_CPS",
+    Callback = function(v) State.ManualCPS = v end })
+
+AutomationTab:CreateSection("Triggerbot")
+AutomationTab:CreateToggle({
+    Name = "Triggerbot", CurrentValue = false, Flag = "Triggerbot",
+    Callback = function(on)
+        State.Triggerbot = on
+        if on then
+            if Connections.Triggerbot then Connections.Triggerbot:Disconnect() end
+            Connections.Triggerbot = RunService.PreSimulation:Connect(function()
+                if not State.Triggerbot then return end
+                for _, b in ipairs(getBalls()) do
+                    if b:GetAttribute("target") ~= Player.Name then continue end
+                    local d = getCurveData(b)
+                    if d.TriggerbotParried then continue end
+                    if os.clock() - State.LastParry < 0.5 then continue end
+                    local char = Player.Character
+                    if not char or not char.PrimaryPart then continue end
+                    if char.PrimaryPart:FindFirstChild("SingularityCape") then continue end
+                    playAnimation()
+                    doParry()
+                    State.LastParry = os.clock()
+                    d.TriggerbotParried = true
+                    task.delay(1, function() d.TriggerbotParried = false end)
+                end
+            end)
+        elseif Connections.Triggerbot then
+            Connections.Triggerbot:Disconnect(); Connections.Triggerbot = nil
+        end
+    end,
+})
+
+-- ═══ DETECTIONS TAB ═══
+DetectionTab:CreateSection("Ability Detections")
+DetectionTab:CreateToggle({ Name="Infinity Detection", CurrentValue=false, Flag="D_Inf", Callback = function(v) State.DetectInfinity = v end })
+DetectionTab:CreateToggle({ Name="Death Slash Detection", CurrentValue=false, Flag="D_DS", Callback = function(v) State.DetectDeathSlash = v end })
+DetectionTab:CreateToggle({ Name="Time Hole Detection", CurrentValue=false, Flag="D_TH", Callback = function(v) State.DetectTimeHole = v end })
+DetectionTab:CreateToggle({ Name="Slashes of Fury", CurrentValue=false, Flag="D_SoF", Callback = function(v) State.DetectSoF = v end })
+
+DetectionTab:CreateToggle({ Name="Anti Phantom", CurrentValue=false, Flag="D_Phantom",
+    Callback = function(v)
+        State.DetectPhantom = v
+        if v and Runtime then
+            if Connections.Phantom then Connections.Phantom:Disconnect() end
+            Connections.Phantom = Runtime.ChildAdded:Connect(function(c)
+                if c.Name == "maxTransmission" or c.Name == "transmissionpart" then
+                    local w = c:FindFirstChildWhichIsA("WeldConstraint")
+                    if w and w.Part1 and Player.Character and w.Part1:IsDescendantOf(Player.Character) then
+                        w:Destroy()
+                    end
+                end
+            end)
+        elseif Connections.Phantom then
+            Connections.Phantom:Disconnect(); Connections.Phantom = nil
+        end
+    end })
+
+DetectionTab:CreateSection("Player Detections")
+DetectionTab:CreateToggle({ Name="Staff Detection", CurrentValue=false, Flag="D_Staff",
+    Callback = function(v)
+        State.DetectStaff = v
+        if v then
+            if Connections.Staff then Connections.Staff:Disconnect() end
+            Connections.Staff = Players.PlayerAdded:Connect(function(p)
+                pcall(function()
+                    local role = tostring(p:GetRoleInGroup(1200769)):lower()
+                    local isStaff = role ~= "guest" and role ~= "member" and role ~= ""
+                    if not isStaff then
+                        role = tostring(p:GetRoleInGroup(2868472)):lower()
+                        isStaff = role ~= "guest" and role ~= "member" and role ~= ""
+                    end
+                    if isStaff then
+                        Rayfield:Notify({ Title="Staff Detected", Content=p.DisplayName .. " (" .. role .. ")", Duration=8 })
+                    end
+                end)
+            end)
+        elseif Connections.Staff then
+            Connections.Staff:Disconnect(); Connections.Staff = nil
+        end
+    end })
+
+DetectionTab:CreateSection("Protection")
+DetectionTab:CreateToggle({ Name="Cooldown Protection", CurrentValue=false, Flag="Cd_Prot",
+    Callback = function(v) State.CooldownProtection = v end })
+
+-- ═══ PLAYER TAB ═══
+PlayerTab:CreateSection("Movement")
+PlayerTab:CreateToggle({ Name="Speed Changer", CurrentValue=false, Flag="Spd",
+    Callback = function(on)
+        State.Speed = on
+        if on then
+            if Connections.Speed then Connections.Speed:Disconnect() end
+            Connections.Speed = RunService.PreSimulation:Connect(function()
+                local c = Player.Character
+                local h = c and c:FindFirstChildOfClass("Humanoid")
+                if h then h.WalkSpeed = State.SpeedValue end
+            end)
+        elseif Connections.Speed then
+            Connections.Speed:Disconnect(); Connections.Speed = nil
+            local c = Player.Character; local h = c and c:FindFirstChildOfClass("Humanoid")
+            if h then h.WalkSpeed = 36 end
+        end
+    end })
+
+PlayerTab:CreateSlider({ Name="Speed Value", Range={16,500}, Increment=1, CurrentValue=36, Flag="Spd_V",
+    Callback = function(v) State.SpeedValue = v end })
+
+PlayerTab:CreateToggle({ Name="Fly", CurrentValue=false, Flag="Fly",
+    Callback = function(on)
+        State.Fly = on
+        local char = Player.Character or Player.CharacterAdded:Wait()
+        local hrp = char:WaitForChild("HumanoidRootPart")
+        local hum = char:WaitForChild("Humanoid")
+        if on then
+            local g = Instance.new("BodyGyro"); g.P = 9e4; g.MaxTorque = Vector3.new(9e9,9e9,9e9); g.Parent = hrp
+            local v = Instance.new("BodyVelocity"); v.Velocity = Vector3.zero; v.MaxForce = Vector3.new(9e9,9e9,9e9); v.Parent = hrp
+            hum.PlatformStand = true
+            if Connections.Fly then Connections.Fly:Disconnect() end
+            Connections.Fly = RunService.RenderStepped:Connect(function()
+                if not State.Fly then return end
+                local cam = workspace.CurrentCamera
+                local mv = Vector3.zero
+                if UserInputService:IsKeyDown(Enum.KeyCode.W) then mv += cam.CFrame.LookVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.S) then mv -= cam.CFrame.LookVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.A) then mv -= cam.CFrame.RightVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.D) then mv += cam.CFrame.RightVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.E) then mv += Vector3.new(0,1,0) end
+                if UserInputService:IsKeyDown(Enum.KeyCode.Q) then mv -= Vector3.new(0,1,0) end
+                if mv.Magnitude > 0 then mv = mv.Unit end
+                v.Velocity = mv * State.FlySpeed
+                g.CFrame = cam.CFrame
+            end)
+        else
+            if Connections.Fly then Connections.Fly:Disconnect(); Connections.Fly = nil end
+            for _, x in ipairs(hrp:GetChildren()) do
+                if x:IsA("BodyGyro") or x:IsA("BodyVelocity") then x:Destroy() end
+            end
+            hum.PlatformStand = false
+        end
+    end })
+
+PlayerTab:CreateSlider({ Name="Fly Speed", Range={10,200}, Increment=1, CurrentValue=50, Flag="Fly_S",
+    Callback = function(v) State.FlySpeed = v end })
+
+PlayerTab:CreateToggle({ Name="Spinbot", CurrentValue=false, Flag="Spin",
+    Callback = function(on)
+        State.Spinbot = on
+        if on then
+            if Connections.Spin then Connections.Spin:Disconnect() end
+            Connections.Spin = RunService.Heartbeat:Connect(function()
+                if not State.Spinbot then return end
+                local c = Player.Character
+                local hrp = c and c:FindFirstChild("HumanoidRootPart")
+                if hrp then hrp.CFrame *= CFrame.Angles(0, math.rad(State.SpinSpeed), 0) end
+            end)
+        elseif Connections.Spin then
+            Connections.Spin:Disconnect(); Connections.Spin = nil
+        end
+    end })
+
+-- ═══ VISUALS TAB ═══
+VisualTab:CreateSection("Render")
+VisualTab:CreateToggle({ Name="No Render", CurrentValue=false, Flag="NR",
+    Callback = function(on)
+        State.NoRender = on
+        if on then
+            pcall(function() Player.PlayerScripts.EffectScripts.ClientFX.Disabled = true end)
+            if Connections.NR then Connections.NR:Disconnect() end
+            if Runtime then
+                Connections.NR = Runtime.ChildAdded:Connect(function(c)
+                    if c.Name:find("PortalFor_") or c.Name:find("WaypointFor_") then return end
+                    Debris:AddItem(c, 0)
+                end)
+            end
+        else
+            pcall(function() Player.PlayerScripts.EffectScripts.ClientFX.Disabled = false end)
+            if Connections.NR then Connections.NR:Disconnect(); Connections.NR = nil end
+        end
+    end })
+
+VisualTab:CreateToggle({ Name="Anti-Lag", CurrentValue=false, Flag="AL",
+    Callback = function(on)
+        State.AntiLag = on
+        if on then
+            pcall(function()
+                settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+                Lighting.GlobalShadows = false
+                workspace.Terrain.WaterWaveSize = 0
+                workspace.Terrain.WaterWaveSpeed = 0
+                workspace.Terrain.WaterReflectance = 0
+            end)
+        end
+    end })
+
+VisualTab:CreateSection("ESP")
+VisualTab:CreateToggle({ Name="Ability ESP", CurrentValue=false, Flag="AESP",
+    Callback = function(v)
+        State.AbilityESP = v
+        if v then
+            local function attach(p)
+                pcall(function()
+                    if p == Player then return end
+                    local c = p.Character
+                    if not c then return end
+                    local head = c:FindFirstChild("Head")
+                    if not head then return end
+                    if head:FindFirstChild("ZeusESPGui") then return end
+                    local bg = Instance.new("BillboardGui")
+                    bg.Name = "ZeusESPGui"; bg.Adornee = head
+                    bg.Size = UDim2.new(0,200,0,50)
+                    bg.StudsOffset = Vector3.new(0,3.5,0)
+                    bg.AlwaysOnTop = true; bg.Parent = head
+                    local lbl = Instance.new("TextLabel")
+                    lbl.Size = UDim2.fromScale(1,1)
+                    lbl.BackgroundTransparency = 1
+                    lbl.TextColor3 = Color3.fromRGB(255,220,50)
+                    lbl.TextStrokeTransparency = 0.5
+                    lbl.Font = Enum.Font.GothamBold
+                    lbl.TextSize = 13
+                    lbl.Name = "AbilityLabel"
+                    lbl.Parent = bg
+                    local h = c:FindFirstChildOfClass("Humanoid")
+                    if h then h.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None end
+                end)
+            end
+            for _, p in ipairs(Players:GetPlayers()) do attach(p) end
+            if Connections.ESPAdded then Connections.ESPAdded:Disconnect() end
+            Connections.ESPAdded = Players.PlayerAdded:Connect(function(p)
+                p.CharacterAdded:Connect(function() task.wait(0.5); attach(p) end)
+            end)
+        else
+            for _, p in ipairs(Players:GetPlayers()) do
+                local head = p.Character and p.Character:FindFirstChild("Head")
+                local bg = head and head:FindFirstChild("ZeusESPGui")
+                if bg then bg:Destroy() end
+            end
+        end
+    end })
+
+VisualTab:CreateToggle({ Name="Ball Trail", CurrentValue=false, Flag="BT",
+    Callback = function(on)
+        State.BallTrail = on
+        if on then
+            if Connections.BT then Connections.BT:Disconnect() end
+            local hue = 0
+            Connections.BT = RunService.Heartbeat:Connect(function()
+                if not State.BallTrail then return end
+                local ball = getBall()
+                if not ball then return end
+                local trail = ball:FindFirstChild("ZeusTrail")
+                if not trail then
+                    trail = Instance.new("Trail"); trail.Name = "ZeusTrail"
+                    local a0 = Instance.new("Attachment"); a0.Position = Vector3.new(0, ball.Size.Y/2, 0); a0.Parent = ball
+                    local a1 = Instance.new("Attachment"); a1.Position = Vector3.new(0, -ball.Size.Y/2, 0); a1.Parent = ball
+                    trail.Attachment0 = a0; trail.Attachment1 = a1
+                    trail.Lifetime = 0.4; trail.WidthScale = NumberSequence.new(0.5)
+                    trail.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0,0), NumberSequenceKeypoint.new(1,1)})
+                    trail.Parent = ball
+                end
+                if State.BallTrailRainbow then
+                    hue = (hue + 1) % 360
+                    trail.Color = ColorSequence.new(Color3.fromHSV(hue/360, 1, 1))
+                else
+                    trail.Color = ColorSequence.new(Color3.fromRGB(0,255,255))
+                end
+            end)
+        else
+            if Connections.BT then Connections.BT:Disconnect(); Connections.BT = nil end
+            for _, b in ipairs(getBalls()) do local t = b:FindFirstChild("ZeusTrail"); if t then t:Destroy() end end
+        end
+    end })
+
+VisualTab:CreateToggle({ Name="Rainbow Trail", CurrentValue=false, Flag="BTR",
+    Callback = function(v) State.BallTrailRainbow = v end })
+
+VisualTab:CreateToggle({ Name="Ball Stats", CurrentValue=false, Flag="BS",
+    Callback = function(on)
+        State.BallStats = on
+        if on then
+            local gui = Instance.new("ScreenGui"); gui.Name = "ZeusBallStats"
+            gui.ResetOnSpawn = false; gui.Parent = PlayerGui
+            local lbl = Instance.new("TextLabel")
+            lbl.Size = UDim2.new(0.25, 0, 0.05, 0)
+            lbl.Position = UDim2.new(0.7, 0, 0.1, 0)
+            lbl.TextSize = 22; lbl.BackgroundTransparency = 1
+            lbl.TextColor3 = Color3.new(1,1,1); lbl.Font = Enum.Font.Fantasy
+            lbl.TextStrokeTransparency = 0.3
+            lbl.Text = "Waiting..."; lbl.Parent = gui
+            State.BSGui = gui; State.BSLabel = lbl
+            if Connections.BS then Connections.BS:Disconnect() end
+            Connections.BS = RunService.Heartbeat:Connect(function()
+                if not State.BallStats then return end
+                local maxV = 0
+                for _, b in ipairs(getBalls()) do
+                    local z = b:FindFirstChild("zoomies")
+                    if z then maxV = math.max(maxV, z.VectorVelocity.Magnitude) end
+                end
+                if maxV > 0 then
+                    local flag = maxV >= 2200
+                    lbl.Text = string.format("Ball: %.0f%s", maxV, flag and " (MAX)" or "")
+                    lbl.TextColor3 = flag and Color3.new(1,0,0) or Color3.new(1,1,1)
+                else
+                    lbl.Text = "Waiting..."
+                end
+            end)
+        else
+            if Connections.BS then Connections.BS:Disconnect(); Connections.BS = nil end
+            if State.BSGui then State.BSGui:Destroy(); State.BSGui = nil end
+        end
+    end })
+
+VisualTab:CreateToggle({ Name="FOV Changer", CurrentValue=false, Flag="FOV",
+    Callback = function(on)
+        State.FOV = on
+        if on then
+            if Connections.FOV then Connections.FOV:Disconnect() end
+            Connections.FOV = RunService.RenderStepped:Connect(function()
+                if State.FOV then workspace.CurrentCamera.FieldOfView = State.FOVValue end
+            end)
+        else
+            if Connections.FOV then Connections.FOV:Disconnect(); Connections.FOV = nil end
+            workspace.CurrentCamera.FieldOfView = 70
+        end
+    end })
+
+VisualTab:CreateSlider({ Name="FOV Value", Range={50,120}, Increment=1, CurrentValue=70, Flag="FOV_V",
+    Callback = function(v) State.FOVValue = v end })
+
+VisualTab:CreateSection("Audio")
+local hitSoundIds = {
+    Medal = "rbxassetid://6607336718", Fatality = "rbxassetid://6607113255",
+    Skeet = "rbxassetid://6607204501", Switches = "rbxassetid://6607173363",
+    Bubble = "rbxassetid://6534947588", Laser = "rbxassetid://7837461331",
+}
+local hitSoundObj = Instance.new("Sound")
+hitSoundObj.Volume = 5
+hitSoundObj.Parent = game:GetService("SoundService")
+
+VisualTab:CreateToggle({ Name="Hit Sounds", CurrentValue=false, Flag="HS",
+    Callback = function(v) State.HitSounds = v end })
+
+VisualTab:CreateDropdown({ Name="Hit Sound", Options={"Medal","Fatality","Skeet","Switches","Bubble","Laser"},
+    CurrentOption="Medal", Flag="HS_T",
+    Callback = function(v)
+        State.HitSoundType = v
+        hitSoundObj.SoundId = hitSoundIds[v] or hitSoundIds.Medal
+    end })
+
+VisualTab:CreateSlider({ Name="Hit Sound Volume", Range={1,10}, Increment=1, CurrentValue=5, Flag="HS_V",
+    Callback = function(v) hitSoundObj.Volume = v end })
+
+-- ═══ SKIN TAB ═══
+SkinTab:CreateSection("Skin Changer")
+local SkinState = { enabled=false, swordModule=nil, swordInfo=nil, origSword=nil, loopConn=nil }
+
+local function getSwordModule()
+    if SkinState.swordModule then return SkinState.swordModule end
+    local okk, mod = pcall(function() return require(ReplicatedStorage.Shared.ReplicatedInstances.Swords) end)
+    if okk and mod then SkinState.swordModule = mod end
+    return SkinState.swordModule
+end
+
+local function getSwordInfo()
+    if SkinState.swordInfo then return SkinState.swordInfo end
+    pcall(function()
+        for _, conn in ipairs(getconnections(ReplicatedStorage.Remotes.FireSwordInfo.OnClientEvent)) do
+            if conn.Function and islclosure(conn.Function) then
+                local ups = getupvalues(conn.Function)
+                if #ups == 1 and type(ups[1]) == "table" then
+                    SkinState.swordInfo = ups[1]; break
+                end
+            end
+        end
+    end)
+    return SkinState.swordInfo
+end
+
+local function applySword()
+    if not SkinState.enabled or not Player.Character then return end
+    local mod = getSwordModule()
+    if not mod then return end
+    pcall(function() setupvalue(rawget(mod, "EquipSwordTo"), 3, false) end)
+    pcall(function() mod:EquipSwordTo(Player.Character, State.SwordModel) end)
+    local info = getSwordInfo()
+    if info then pcall(function() info:SetSword(State.SwordModel) end) end
+end
+
+SkinTab:CreateToggle({ Name="Skin Changer", CurrentValue=false, Flag="SC",
+    Callback = function(on)
+        State.SkinChanger = on
+        SkinState.enabled = on
+        if on then
+            SkinState.origSword = Player:GetAttribute("CurrentlyEquippedSword")
+            applySword()
+            if SkinState.loopConn then SkinState.loopConn:Disconnect() end
+            SkinState.loopConn = RunService.Heartbeat:Connect(function()
+                if not SkinState.enabled or not Player.Character then return end
+                if State.SwordModel ~= "" and Player:GetAttribute("CurrentlyEquippedSword") ~= State.SwordModel then
+                    applySword()
+                end
+            end)
+        else
+            if SkinState.loopConn then SkinState.loopConn:Disconnect(); SkinState.loopConn = nil end
+            local mod = getSwordModule()
+            if mod and SkinState.origSword then
+                pcall(function() mod:EquipSwordTo(Player.Character, SkinState.origSword) end)
+            end
+        end
+    end })
+
+SkinTab:CreateInput({ Name="Sword Name", PlaceholderText="Enter sword name...",
+    RemoveTextAfterFocusLost=false, Flag="SW_N",
+    Callback = function(text) State.SwordModel = text; if SkinState.enabled then applySword() end end })
+
+-- ═══ UNLOCK TAB ═══
+UnlockTab:CreateSection("Unlock All")
+UnlockTab:CreateButton({
+    Name = "Unlock All Swords & Explosions",
+    Callback = function()
+        local shop = PlayerGui:FindFirstChild("Shop")
+        if not shop then
+            Rayfield:Notify({ Title="Unlock All", Content="Open the shop first!", Duration=3 })
+            return
+        end
+        task.spawn(function()
+            while task.wait(0.15) do
+                local holder = shop:FindFirstChild("Holder")
+                if not holder then continue end
+                local pages = holder:FindFirstChild("Pages")
+                for _, pg in ipairs({"Sword","Explosion"}) do
+                    local page = pages and pages:FindFirstChild(pg)
+                    if page then
+                        local hdr = page:FindFirstChild("HeaderTitle")
+                        if hdr then hdr.Visible = false end
+                        for _, desc in ipairs(page:GetDescendants()) do
+                            if desc.Name == "Lock" and desc:IsA("GuiObject") then
+                                desc.Visible = false
+                                local card = desc.Parent
+                                if card and card:IsA("GuiObject") then
+                                    card.LayoutOrder = 0
+                                    if card.Parent and card.Parent.Name == "Unowned" then
+                                        local owned = page:FindFirstChild("Owned", true)
+                                        if owned then card.Parent = owned end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+                if PlayerGui:FindFirstChild("Shop") ~= shop then break end
+            end
+        end)
+        Rayfield:Notify({ Title="Unlock All", Content="Unlocking...", Duration=3 })
+    end,
+})
+
+-- ═══ MISC TAB ═══
+MiscTab:CreateSection("Miscellaneous")
+MiscTab:CreateToggle({ Name="Anti-AFK", CurrentValue=false, Flag="AFK",
+    Callback = function(on)
+        State.AntiAFK = on
+        if on then
+            if Connections.AFK then Connections.AFK:Disconnect() end
+            Connections.AFK = Player.Idled:Connect(function()
+                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Space, false, game)
+                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
+            end)
+        elseif Connections.AFK then
+            Connections.AFK:Disconnect(); Connections.AFK = nil
+        end
+    end })
+
+MiscTab:CreateSection("Semi Immortal")
+MiscTab:CreateToggle({ Name="Semi Immortal (Desync)", CurrentValue=false, Flag="SI",
+    Callback = function(on)
+        State.SemiImmortal = on
+        if on then
+            if Connections.SI then Connections.SI:Disconnect() end
+            local orig = {}
+            Connections.SI = RunService.Heartbeat:Connect(function()
+                if not State.SemiImmortal then return end
+                local c = Player.Character
+                local hrp = c and c:FindFirstChild("HumanoidRootPart")
+                if not hrp then return end
+                orig.cf = hrp.CFrame; orig.vel = hrp.AssemblyLinearVelocity
+                local ang = tick() * 10
+                hrp.CFrame = orig.cf * CFrame.new(math.cos(ang) * State.SemiRadius, State.SemiHeight, math.sin(ang) * State.SemiRadius)
+                hrp.AssemblyLinearVelocity = Vector3.new(1, 1, 1)
+                RunService.RenderStepped:Wait()
+                hrp.CFrame = orig.cf
+                hrp.AssemblyLinearVelocity = orig.vel
+            end)
+        elseif Connections.SI then
+            Connections.SI:Disconnect(); Connections.SI = nil
+        end
+    end })
+
+MiscTab:CreateSlider({ Name="Radius", Range={5,200}, Increment=5, CurrentValue=40, Flag="SI_R",
+    Callback = function(v) State.SemiRadius = v end })
+MiscTab:CreateSlider({ Name="Height", Range={5,500}, Increment=5, CurrentValue=100, Flag="SI_H",
+    Callback = function(v) State.SemiHeight = v end })
+
+-- ═══ SETTINGS TAB ═══
+SettingsTab:CreateSection("Session")
+SettingsTab:CreateToggle({ Name="Auto Rejoin", CurrentValue=false, Flag="RJ",
+    Callback = function(on)
+        State.AutoRejoin = on
+        if on then
+            if Connections.RJ then Connections.RJ:Disconnect() end
+            local po = CoreGui:WaitForChild("RobloxPromptGui"):WaitForChild("promptOverlay")
+            Connections.RJ = po.ChildAdded:Connect(function(g)
+                if g.Name ~= "ErrorPrompt" then return end
+                task.wait(2)
+                game:GetService("TeleportService"):Teleport(game.PlaceId, Player)
+            end)
+        elseif Connections.RJ then
+            Connections.RJ:Disconnect(); Connections.RJ = nil
+        end
+    end })
+
+SettingsTab:CreateToggle({ Name="Ping Spoofer", CurrentValue=false, Flag="PS",
+    Callback = function(on)
+        State.PingSpoofer = on
+        if on then
+            if Connections.PS then Connections.PS:Disconnect() end
+            Connections.PS = RunService.RenderStepped:Connect(function()
+                if not State.PingSpoofer then return end
+                pcall(function()
+                    local rg = CoreGui:FindFirstChild("RobloxGui"); if not rg then return end
+                    local ps = rg:FindFirstChild("PerformanceStats"); if not ps then return end
+                    for _, d in ipairs(ps:GetDescendants()) do
+                        if d:IsA("TextLabel") and d.Text:match("%d+ ms") then
+                            d.Text = tostring(State.PingValue) .. " ms"
+                        end
+                    end
+                end)
+            end)
+        elseif Connections.PS then
+            Connections.PS:Disconnect(); Connections.PS = nil
+        end
+    end })
+
+SettingsTab:CreateSlider({ Name="Fake Ping", Range={0,999}, Increment=1, CurrentValue=999, Flag="PS_V",
+    Callback = function(v) State.PingValue = v end })
+
+SettingsTab:CreateButton({
+    Name = "Unload Zeus BB",
+    Callback = function()
+        for _, c in pairs(Connections) do pcall(function() c:Disconnect() end) end
+        pcall(function() Rayfield:Destroy() end)
+        getgenv().ZeusBB = nil
+    end,
+})
+
+-- ═══ DETECTION EVENTS ═══
+pcall(function() ReplicatedStorage.Remotes.InfinityBall.OnClientEvent:Connect(function(_, on) State.InfinityActive = on end) end)
+pcall(function() ReplicatedStorage.Remotes.DeathBall.OnClientEvent:Connect(function(_, on) State.DeathSlashActive = on end) end)
+pcall(function()
+    local net = ReplicatedStorage.Packages._Index["sleitnick_net@0.1.0"].net
+    net["RE/TimeHoleActivate"].OnClientEvent:Connect(function(p)
+        if p == Player or (p and p.Name == Player.Name) then State.TimeHoleActive = true end
+    end)
+    net["RE/TimeHoleDeactivate"].OnClientEvent:Connect(function() State.TimeHoleActive = false end)
+    net["RE/SlashesOfFuryActivate"].OnClientEvent:Connect(function(p)
+        if p == Player or (p and p.Name == Player.Name) then State.SoFActive = true end
+    end)
+    net["RE/SlashesOfFuryEnd"].OnClientEvent:Connect(function() State.SoFActive = false end)
+end)
+
+pcall(function()
+    ReplicatedStorage.Remotes.ParrySuccess.OnClientEvent:Connect(function()
+        State.BypassCd = true
+        if State.HitSounds then pcall(function() hitSoundObj:Play() end) end
+        local c = Player.Character
+        local h = c and c:FindFirstChildOfClass("Humanoid")
+        local a = h and h:FindFirstChildOfClass("Animator")
+        if a then
+            for _, t in a:GetPlayingAnimationTracks() do
+                if t.Name == "GrabParry" or t.Name == "Grab" then
+                    t:Stop(t:GetAttribute("StopFadeTime") or 0.1)
+                end
+            end
+        end
+    end)
+end)
+
+Balls.ChildAdded:Connect(function(b) if b:GetAttribute("realBall") then getCurveData(b) end end)
+
+-- Real ball tracking
+pcall(function()
+    local net = ReplicatedStorage.Packages._Index["sleitnick_net@0.1.0"].net
+    for _, c in ipairs(net:GetChildren()) do
+        if c:IsA("UnreliableRemoteEvent") and c.Name ~= "URE/ReplicateBallPosition" then
+            c.OnClientEvent:Connect(function(a, p)
+                if not a or not a.Parent then
+                    if a == TrackedBall then TrackedBall = nil; RealBallPos = nil end
+                    return
+                end
+                TrackedBall = a; RealBallPos = p
+            end)
+        end
+    end
+end)
+
+-- ESP text updater
+task.spawn(function()
+    while task.wait(0.3) do
+        if State.AbilityESP then
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p ~= Player and p.Character then
+                    local head = p.Character:FindFirstChild("Head")
+                    local bg = head and head:FindFirstChild("ZeusESPGui")
+                    local lbl = bg and bg:FindFirstChild("AbilityLabel")
+                    if lbl then
+                        local ab = p:GetAttribute("EquippedAbility")
+                        lbl.Text = ab and (p.DisplayName .. " [" .. ab .. "]") or p.DisplayName
+                    end
+                end
+            end
+        end
+    end
+end)
+
+getgenv().ZeusBB = { State = State, Connections = Connections, Parry = doParry, Unload = function()
+    for _, c in pairs(Connections) do pcall(function() c:Disconnect() end) end
+    pcall(function() Rayfield:Destroy() end)
+    getgenv().ZeusBB = nil
+end }
+
+Rayfield:Notify({ Title="Zeus BB", Content="Enhanced loaded!", Duration=5, Image=4483362458 })
+
+end) -- end pcall
+
+if not ok then
+    warn("[Zeus BB] LOAD ERROR:")
+    warn(err)
+    pcall(function()
+        Rayfield = Rayfield or loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+        Rayfield:Notify({ Title="Zeus BB Error", Content=tostring(err):sub(1, 100), Duration=15 })
+    end)
+end
